@@ -1,1 +1,130 @@
 @import "tailwindcss";
+
+@theme {
+  --font-display: "ZCOOL QingKe HuangYou", "Noto Sans SC", sans-serif;
+  --font-body: "Noto Sans SC", system-ui, sans-serif;
+  --font-data: "Space Grotesk", "Noto Sans SC", sans-serif;
+
+  --color-space-950: #04060f;
+  --color-space-900: #070b18;
+  --color-space-800: #0c1226;
+  --color-solar-300: #ffd98a;
+  --color-solar-400: #f5c66a;
+  --color-solar-500: #e8a33d;
+  --color-ice-300: #9fdbe4;
+  --color-ice-400: #6fc9cf;
+}
+
+html,
+body {
+  font-family: var(--font-body);
+  background: var(--color-space-950);
+  color: #eef2ff;
+  overflow: hidden;
+}
+
+::selection {
+  background: rgba(245, 198, 106, 0.35);
+}
+
+/* ---------- custom speed slider ---------- */
+input[type="range"].orbit-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    rgba(245, 198, 106, 0.9) 0%,
+    rgba(245, 198, 106, 0.9) var(--fill, 50%),
+    rgba(255, 255, 255, 0.12) var(--fill, 50%),
+    rgba(255, 255, 255, 0.12) 100%
+  );
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"].orbit-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #ffd98a;
+  border: 2px solid #070b18;
+  box-shadow:
+    0 0 0 2px rgba(245, 198, 106, 0.55),
+    0 0 14px rgba(245, 198, 106, 0.65);
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+input[type="range"].orbit-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+}
+input[type="range"].orbit-slider::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #ffd98a;
+  border: 2px solid #070b18;
+  box-shadow:
+    0 0 0 2px rgba(245, 198, 106, 0.55),
+    0 0 14px rgba(245, 198, 106, 0.65);
+}
+
+/* ---------- keyframes ---------- */
+@keyframes nebula-drift-a {
+  0% { transform: translate3d(-3%, -2%, 0) scale(1); }
+  100% { transform: translate3d(3%, 2%, 0) scale(1.12); }
+}
+@keyframes nebula-drift-b {
+  0% { transform: translate3d(2%, 3%, 0) scale(1.08); }
+  100% { transform: translate3d(-3%, -2%, 0) scale(1); }
+}
+@keyframes panel-in {
+  from { opacity: 0; transform: translateX(26px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes stat-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes hint-float {
+  0%, 100% { transform: translateY(0); opacity: 0.85; }
+  50% { transform: translateY(-5px); opacity: 1; }
+}
+
+.nebula-a { animation: nebula-drift-a 26s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate; }
+.nebula-b { animation: nebula-drift-b 34s cubic-bezier(0.45, 0, 0.55, 1) infinite alternate; }
+.anim-panel-in { animation: panel-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.anim-stat-in { animation: stat-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.anim-hint { animation: hint-float 3.2s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+
+kbd {
+  font-family: var(--font-data);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom-width: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* thin scrollbars for the planet strip */
+.slim-scroll::-webkit-scrollbar { height: 4px; width: 4px; }
+.slim-scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 99px; }
+.slim-scroll { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.14) transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .nebula-a,
+  .nebula-b,
+  .anim-hint {
+    animation: none !important;
+  }
+  .anim-panel-in,
+  .anim-stat-in {
+    animation-duration: 0.01ms !important;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
