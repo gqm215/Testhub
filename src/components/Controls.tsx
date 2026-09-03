@@ -1,182 +1,174 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
-export const SPEED_MIN = 0.1;
-export const SPEED_MAX = 20;
-
-export const speedToSlider = (speed: number) =>
-  Math.log(speed / SPEED_MIN) / Math.log(SPEED_MAX / SPEED_MIN);
-export const sliderToSpeed = (v: number) =>
-  SPEED_MIN * Math.pow(SPEED_MAX / SPEED_MIN, v);
-
-interface Props {
+interface ControlsProps {
   playing: boolean;
-  speed: number;
-  zoom: number;
-  simDays: number;
-  showOrbits: boolean;
-  showLabels: boolean;
   onTogglePlay: () => void;
-  onSpeedChange: (speed: number) => void;
-  onZoomBy: (dir: 1 | -1) => void;
+  speed: number;
+  onSpeedChange: (v: number) => void;
+  showOrbits: boolean;
   onToggleOrbits: () => void;
+  showLabels: boolean;
   onToggleLabels: () => void;
-  onReset: () => void;
+  follow: boolean;
+  onToggleFollow: () => void;
+  simTimeRef: { current: HTMLSpanElement | null };
 }
 
-const PRESETS = [0.5, 1, 2, 5, 10];
+const PRESETS = [0.5, 1, 5, 20];
+const LOG_MIN = 0.1;
+const LOG_RANGE = 500; // 0.1 × 500 = 50
 
-const fmtSpeed = (s: number) =>
-  s >= 10 ? `${Math.round(s)}×` : s >= 1 ? `${s.toFixed(1)}×` : `${s.toFixed(2)}×`;
+const speedToSlider = (s: number) =>
+  (Math.log(s / LOG_MIN) / Math.log(LOG_RANGE)) * 1000;
+
+const formatSpeed = (s: number) =>
+  s >= 10 ? `${Math.round(s)}×` : s >= 1 ? `${parseFloat(s.toFixed(1))}×` : `${s.toFixed(1)}×`;
+
+function Toggle({
+  active,
+  onClick,
+  dotColor,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  dotColor: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition-all duration-200 active:scale-95 ${
+        active
+          ? "border-white/20 bg-white/[0.08] text-slate-100"
+          : "border-white/8 text-slate-500 hover:border-white/20 hover:text-slate-300"
+      }`}
+    >
+      <span
+        className="h-1.5 w-1.5 rounded-full transition-all duration-200"
+        style={{
+          background: active ? dotColor : "rgba(255,255,255,0.25)",
+          boxShadow: active ? `0 0 8px ${dotColor}` : "none",
+        }}
+      />
+      {children}
+    </button>
+  );
+}
 
 export default function Controls({
   playing,
-  speed,
-  zoom,
-  simDays,
-  showOrbits,
-  showLabels,
   onTogglePlay,
+  speed,
   onSpeedChange,
-  onZoomBy,
+  showOrbits,
   onToggleOrbits,
+  showLabels,
   onToggleLabels,
-  onReset,
-}: Props) {
-  const years = Math.floor(simDays / 365.25);
-  const days = Math.floor(simDays % 365.25);
-  const v = speedToSlider(speed);
-  const btnBase =
-    "flex items-center justify-center rounded-full border border-white/10 text-white/60 transition-all duration-200 hover:border-solar-400/60 hover:text-solar-300 active:scale-90";
+  follow,
+  onToggleFollow,
+  simTimeRef,
+}: ControlsProps) {
+  const sliderVal = speedToSlider(speed);
 
   return (
-    <div className="absolute bottom-4 left-1/2 z-30 w-max max-w-[calc(100vw-1.5rem)] -translate-x-1/2 md:bottom-6">
-      <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-3 rounded-2xl border border-white/10 bg-[#070b18]/85 px-4 py-3 shadow-[0_18px_60px_rgba(0,0,0,0.55)] backdrop-blur-md md:rounded-full md:px-6">
-        {/* 播放 / 暂停 */}
+    <div className="fixed bottom-3 left-1/2 z-30 w-max max-w-[min(96vw,1000px)] -translate-x-1/2">
+      <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 rounded-xl border border-white/10 bg-[#070b18]/85 px-4 py-2.5 shadow-[0_16px_50px_rgba(0,0,0,0.55)] backdrop-blur-md">
+        {/* play / pause */}
         <button
           onClick={onTogglePlay}
           aria-label={playing ? "暂停" : "播放"}
-          title={playing ? "暂停（空格）" : "播放（空格）"}
-          className="group relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-solar-300 to-solar-500 text-[#1a1205] shadow-[0_0_24px_rgba(245,198,106,0.45)] transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] hover:scale-105 active:scale-90"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-[#0a0f1f] shadow-[0_0_18px_rgba(245,198,106,0.45)] transition-all duration-200 hover:scale-108 hover:shadow-[0_0_26px_rgba(245,198,106,0.65)] active:scale-92"
+          style={{
+            background: "linear-gradient(135deg, #ffe29a, #f5a83d)",
+          }}
         >
-          <span className="absolute inset-0 rounded-full bg-solar-300/40 opacity-0 blur-md transition-opacity duration-300 group-hover:opacity-100" />
           {playing ? (
-            <svg width="16" height="16" viewBox="0 0 16 16" className="relative">
-              <rect x="3" y="2.5" width="3.6" height="11" rx="1.2" fill="currentColor" />
-              <rect x="9.4" y="2.5" width="3.6" height="11" rx="1.2" fill="currentColor" />
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor">
+              <rect x="2.5" y="1.5" width="3.4" height="11" rx="1" />
+              <rect x="8.1" y="1.5" width="3.4" height="11" rx="1" />
             </svg>
           ) : (
-            <svg width="16" height="16" viewBox="0 0 16 16" className="relative ml-0.5">
-              <path d="M4 2.8a1 1 0 0 1 1.53-.85l8.2 5.2a1 1 0 0 1 0 1.7l-8.2 5.2A1 1 0 0 1 4 13.2V2.8z" fill="currentColor" />
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="currentColor">
+              <path d="M4.2 2.4v9.2c0 .8.87 1.28 1.55.85l7.3-4.6a1 1 0 0 0 0-1.7L5.75 1.55A1.02 1.02 0 0 0 4.2 2.4Z" />
             </svg>
           )}
         </button>
 
-        {/* 模拟时间 */}
-        <div className="w-[104px] shrink-0">
-          <div className="text-[9px] uppercase tracking-[0.2em] text-white/35">模拟时间</div>
-          <div className="font-data text-sm font-semibold text-solar-300">
-            {years > 0 ? `${years} 年 ` : ""}
-            {days} 天
-          </div>
-        </div>
-
-        <div className="hidden h-9 w-px bg-white/10 md:block" />
-
-        {/* 速度 */}
-        <div className="flex shrink-0 items-center gap-3">
-          <div>
-            <div className="mb-1 flex items-baseline justify-between gap-3">
-              <span className="text-[9px] uppercase tracking-[0.2em] text-white/35">速度</span>
-              <span className="font-data text-xs font-semibold text-white">{fmtSpeed(speed)}</span>
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.001}
-              value={v}
-              aria-label="模拟速度"
-              onChange={(e) => onSpeedChange(sliderToSpeed(parseFloat(e.target.value)))}
-              className="orbit-slider w-36 md:w-40"
-              style={{ "--fill": `${v * 100}%` } as CSSProperties}
-            />
-            <div className="mt-1.5 flex gap-1">
-              {PRESETS.map((s) => (
+        {/* speed */}
+        <div className="flex items-center gap-2.5">
+          <span className="text-[10px] tracking-[0.2em] text-slate-500">
+            速度
+          </span>
+          <div className="hidden items-center gap-1 md:flex">
+            {PRESETS.map((p) => {
+              const active = Math.abs(speed - p) < 0.001;
+              return (
                 <button
-                  key={s}
-                  onClick={() => onSpeedChange(s)}
-                  className={`font-data rounded-full border px-1.5 py-[1px] text-[10px] leading-4 transition-all duration-200 active:scale-90 ${
-                    Math.abs(speed - s) < 0.05
-                      ? "border-solar-400/70 bg-solar-400/15 text-solar-300"
-                      : "border-white/10 text-white/40 hover:border-white/30 hover:text-white/80"
+                  key={p}
+                  onClick={() => onSpeedChange(p)}
+                  className={`font-data rounded-md px-1.5 py-0.5 text-[11px] transition-all duration-150 active:scale-92 ${
+                    active
+                      ? "bg-solar-400/20 text-solar-300 shadow-[inset_0_0_0_1px_rgba(245,198,106,0.4)]"
+                      : "text-slate-500 hover:bg-white/5 hover:text-slate-200"
                   }`}
                 >
-                  {s}×
+                  {p}×
                 </button>
-              ))}
-            </div>
+              );
+            })}
           </div>
-        </div>
-
-        <div className="hidden h-9 w-px bg-white/10 md:block" />
-
-        {/* 缩放 */}
-        <div className="flex shrink-0 items-center gap-1.5">
-          <button onClick={() => onZoomBy(-1)} aria-label="缩小" title="缩小" className={`${btnBase} h-8 w-8`}>
-            <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-              <path d="M2 6h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
-          </button>
-          <span className="font-data w-11 text-center text-xs font-medium text-white/70">
-            {Math.round(zoom * 100)}%
+          <input
+            type="range"
+            min={0}
+            max={1000}
+            value={sliderVal}
+            aria-label="时间流速"
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              onSpeedChange(LOG_MIN * Math.pow(LOG_RANGE, v / 1000));
+            }}
+            className="orbit-slider w-28 sm:w-36"
+            style={{ "--fill": `${sliderVal / 10}%` } as CSSProperties}
+          />
+          <span className="font-data w-11 text-right text-sm font-semibold text-solar-300">
+            {formatSpeed(speed)}
           </span>
-          <button onClick={() => onZoomBy(1)} aria-label="放大" title="放大（滚轮）" className={`${btnBase} h-8 w-8`}>
-            <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-              <path d="M2 6h8M6 2v8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
-          </button>
         </div>
 
-        <div className="hidden h-9 w-px bg-white/10 md:block" />
+        <span className="hidden h-6 w-px bg-white/10 sm:block" />
 
-        {/* 显示开关 + 重置 */}
-        <div className="flex shrink-0 items-center gap-1.5">
-          {(
-            [
-              ["轨道", showOrbits, onToggleOrbits],
-              ["标签", showLabels, onToggleLabels],
-            ] as const
-          ).map(([label, on, fn]) => (
-            <button
-              key={label}
-              onClick={fn}
-              aria-pressed={on}
-              title={`切换${label}显示`}
-              className={`rounded-full border px-2.5 py-1 text-[11px] transition-all duration-200 active:scale-90 ${
-                on
-                  ? "border-white/25 bg-white/10 text-white"
-                  : "border-white/10 text-white/35 hover:text-white/70"
+        {/* display toggles */}
+        <div className="flex items-center gap-1.5">
+          <Toggle active={showOrbits} onClick={onToggleOrbits} dotColor="#6fc9cf">
+            轨道
+          </Toggle>
+          <Toggle active={showLabels} onClick={onToggleLabels} dotColor="#9db8f0">
+            标签
+          </Toggle>
+          <Toggle active={follow} onClick={onToggleFollow} dotColor="#f5c66a">
+            跟随
+          </Toggle>
+        </div>
+
+        <span className="hidden h-6 w-px bg-white/10 sm:block" />
+
+        {/* mission clock */}
+        <div className="flex items-center gap-2">
+          <span className="flex items-center gap-1.5 text-[10px] tracking-[0.2em] text-slate-500">
+            <span
+              className={`inline-block h-1.5 w-1.5 rounded-full ${
+                playing ? "animate-pulse bg-emerald-400" : "bg-slate-600"
               }`}
-            >
-              {label}
-            </button>
-          ))}
-          <button
-            onClick={onReset}
-            aria-label="重置模拟"
-            title="重置模拟"
-            className={`${btnBase} ml-1 h-8 w-8`}
+            />
+            已模拟
+          </span>
+          <span
+            ref={simTimeRef}
+            className="font-data min-w-[86px] text-xs font-medium tabular-nums text-ice-300"
           >
-            <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-              <path
-                d="M12 7a5 5 0 1 1-1.6-3.68M12 1.5v2.8H9.2"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
+            0 天
+          </span>
         </div>
       </div>
     </div>

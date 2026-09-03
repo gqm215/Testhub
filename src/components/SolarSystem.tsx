@@ -1,94 +1,78 @@
-import { useEffect, useRef } from "react";
-import { PLANETS } from "../data/planets";
+import { useEffect, useRef, useState } from "react";
+import {
+  BODIES,
+  PLANETS,
+  SUN,
+  DAYS_PER_SEC,
+  type BodyData,
+} from "../data/planets";
+
+const TAU = Math.PI * 2;
 
 interface Props {
   playing: boolean;
   speed: number;
-  zoom: number;
-  selected: string | null;
   showOrbits: boolean;
   showLabels: boolean;
-  reducedMotion: boolean;
+  follow: boolean;
+  selectedId: string | null;
   onSelect: (id: string | null) => void;
-  onTogglePlay: () => void;
-  onZoomBy: (dir: 1 | -1) => void;
-  onSimDays: (days: number) => void;
+  simTimeRef: { current: HTMLSpanElement | null };
 }
-
-/* ------- 视觉常量（非真实比例，为教学效果做了艺术化处理） ------- */
-const ORBIT_F = [0.148, 0.215, 0.286, 0.362, 0.505, 0.65, 0.795, 0.94];
-const P_RAD = [3.4, 5.4, 5.9, 4.5, 13.2, 10.8, 8.1, 7.9];
-const TILT = 0.8; // 轻微俯视倾角，制造空间纵深
-const SUN_R = 27;
-const START_ANGLES = [0.9, 2.5, 4.3, 5.6, 1.7, 3.4, 0.25, 5.1];
-const BASE_DAYS_PER_SEC = 20; // 1× 速度：1 秒 ≈ 20 个地球日
-const PERIODS = PLANETS.map((p) => p.periodDays ?? 365);
 
 interface Star {
   x: number;
   y: number;
   r: number;
   a: number;
-  tw: number;
-  ph: number;
-  v: number;
-  tint: string;
 }
-interface Comet {
+interface Twinkle extends Star {
+  phase: number;
+  speed: number;
+}
+interface Shoot {
   x: number;
   y: number;
   vx: number;
   vy: number;
-  len: number;
+  life: number;
 }
-interface HitTarget {
+interface ScreenPos {
   id: string;
   x: number;
   y: number;
   r: number;
 }
 
-function hexToRgba(hex: string, alpha: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+const rand = (a: number, b: number) => a + Math.random() * (b - a);
+
+function hexA(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number
-) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
+export default function SolarSystem({
+  playing,
+  speed,
+  showOrbits,
+  showLabels,
+  follow,
+  selectedId,
+  onSelect,
+  simTimeRef,
+}: Props) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
 
-const TRAIL_SPANS = PERIODS.map((p) => Math.min(1.15, Math.max(0.14, 110 / p)));
+  const uiRef = useRef({ playing, speed, showOrbits, showLabels, follow, selectedId });
+  const onSelectRef = useRef(onSelect);
 
-export default function SolarSystem(props: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const propsRef = useRef(props);
-  propsRef.current = props;
-
-  const simRef = useRef({
-    angles: [...START_ANGLES],
-    simDays: 0,
-    t: 0,
-    stars: [] as Star[],
-    comets: [] as Comet[],
-    cometTimer: 6,
-    hoverId: null as string | null,
-    mouse: null as { x: number; y: number } | null,
-    hits: [] as HitTarget[],
-    w: 0,
-    h: 0,
+  useEffect(() => {
+    uiRef.current = { playing, speed, showOrbits, showLabels, follow, selectedId };
+    onSelectRef.current = onSelect;
   });
 
   useEffect(() => {
@@ -96,439 +80,460 @@ export default function SolarSystem(props: Props) {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const sim = simRef.current;
 
-    /* ---------- 尺寸与星场 ---------- */
+    let W = 0;
+    let H = 0;
+    let dpr = 1;
+    let raf = 0;
+    let last = performance.now();
+
+    const bg = document.createElement("canvas");
+    const bgCtx = bg.getContext("2d")!;
+    let twinkles: Twinkle[] = [];
+    let shoots: Shoot[] = [];
+    let shootTimer = 3.5;
+
+    // camera in world units — starts slightly offset for a gentle intro drift
+    const cam = { x: 90, y: -70, zoom: 0.15 };
+    const sim = { days: 0 };
+    const screenPos: ScreenPos[] = [];
+    let hoverLocal: string | null = null;
+
+    /* ---------------- background ---------------- */
+    const buildBackground = () => {
+      bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const base = bgCtx.createLinearGradient(0, 0, 0, H);
+      base.addColorStop(0, "#060a18");
+      base.addColorStop(0.55, "#04060f");
+      base.addColorStop(1, "#03040a");
+      bgCtx.fillStyle = base;
+      bgCtx.fillRect(0, 0, W, H);
+
+      const blobs = [
+        { x: W * 0.16, y: H * 0.2, r: Math.max(W, H) * 0.52, c: "rgba(24,132,148,0.10)" },
+        { x: W * 0.86, y: H * 0.78, r: Math.max(W, H) * 0.55, c: "rgba(196,96,58,0.075)" },
+        { x: W * 0.64, y: H * 0.12, r: Math.max(W, H) * 0.42, c: "rgba(74,96,196,0.095)" },
+        { x: W * 0.28, y: H * 0.88, r: Math.max(W, H) * 0.36, c: "rgba(148,72,128,0.055)" },
+      ];
+      for (const b of blobs) {
+        const g = bgCtx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+        g.addColorStop(0, b.c);
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        bgCtx.fillStyle = g;
+        bgCtx.fillRect(0, 0, W, H);
+      }
+
+      // static star field
+      for (let i = 0; i < 260; i++) {
+        const x = Math.random() * W;
+        const y = Math.random() * H;
+        const r = rand(0.3, 1.25);
+        bgCtx.globalAlpha = rand(0.12, 0.7);
+        bgCtx.fillStyle = Math.random() < 0.12 ? "#ffe9c4" : "#cfdaf6";
+        bgCtx.beginPath();
+        bgCtx.arc(x, y, r, 0, TAU);
+        bgCtx.fill();
+      }
+      // a few bright stars with cross glints
+      for (let i = 0; i < 7; i++) {
+        const x = Math.random() * W;
+        const y = Math.random() * H;
+        const r = rand(1.3, 2);
+        const g = bgCtx.createRadialGradient(x, y, 0, x, y, r * 5);
+        g.addColorStop(0, "rgba(255,255,255,0.85)");
+        g.addColorStop(0.25, "rgba(205,220,255,0.28)");
+        g.addColorStop(1, "rgba(205,220,255,0)");
+        bgCtx.globalAlpha = 1;
+        bgCtx.fillStyle = g;
+        bgCtx.beginPath();
+        bgCtx.arc(x, y, r * 5, 0, TAU);
+        bgCtx.fill();
+      }
+      bgCtx.globalAlpha = 1;
+
+      // vignette
+      const v = bgCtx.createRadialGradient(
+        W / 2, H / 2, Math.min(W, H) * 0.32,
+        W / 2, H / 2, Math.max(W, H) * 0.72
+      );
+      v.addColorStop(0, "rgba(2,4,10,0)");
+      v.addColorStop(1, "rgba(2,4,10,0.55)");
+      bgCtx.fillStyle = v;
+      bgCtx.fillRect(0, 0, W, H);
+    };
+
     const resize = () => {
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
-      const w = canvas.clientWidth;
-      const h = canvas.clientHeight;
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      sim.w = w;
-      sim.h = h;
-      const count = Math.max(140, Math.min(430, Math.round((w * h) / 2600)));
-      const tints = ["#ffffff", "#ffffff", "#cfe2ff", "#ffe9c9", "#c9f2f5"];
-      sim.stars = Array.from({ length: count }, () => ({
-        x: Math.random() * w,
-        y: Math.random() * h,
-        r: 0.4 + Math.random() * 1.1,
-        a: 0.25 + Math.random() * 0.65,
-        tw: 0.6 + Math.random() * 1.8,
-        ph: Math.random() * Math.PI * 2,
-        v: 1.2 + Math.random() * 4.5,
-        tint: tints[Math.floor(Math.random() * tints.length)],
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = window.innerWidth;
+      H = window.innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      canvas.style.width = `${W}px`;
+      canvas.style.height = `${H}px`;
+      bg.width = W * dpr;
+      bg.height = H * dpr;
+      buildBackground();
+      twinkles = Array.from({ length: 90 }, () => ({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        r: rand(0.4, 1.4),
+        a: rand(0.25, 0.8),
+        phase: rand(0, TAU),
+        speed: rand(0.6, 2.2),
       }));
     };
-    resize();
-    window.addEventListener("resize", resize);
 
-    /* ---------- 交互 ---------- */
-    const pick = (mx: number, my: number): string | null => {
-      let best: HitTarget | null = null;
-      let bestD = Infinity;
-      for (const t of sim.hits) {
-        const d = Math.hypot(mx - t.x, my - t.y);
-        if (d <= t.r + 9 && d < bestD) {
-          best = t;
-          bestD = d;
-        }
+    const w2sX = (wx: number) => (wx - cam.x) * cam.zoom + W / 2;
+    const w2sY = (wy: number) => (wy - cam.y) * cam.zoom + H / 2;
+
+    /* ---------------- drawing helpers ---------------- */
+    const drawRingHalf = (
+      px: number,
+      py: number,
+      r: number,
+      back: boolean
+    ) => {
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(-0.42);
+      const a0 = back ? Math.PI : 0;
+      const a1 = back ? TAU : Math.PI;
+      ctx.lineWidth = r * 0.3;
+      ctx.strokeStyle = "rgba(214,190,140,0.5)";
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r * 2.0, r * 0.62, 0, a0, a1);
+      ctx.stroke();
+      ctx.lineWidth = r * 0.12;
+      ctx.strokeStyle = "rgba(238,218,170,0.4)";
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r * 1.52, r * 0.46, 0, a0, a1);
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    const drawBands = (px: number, py: number, r: number, dark: string) => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, TAU);
+      ctx.clip();
+      ctx.fillStyle = dark;
+      for (const [off, h] of [
+        [-0.52, 0.2],
+        [-0.1, 0.16],
+        [0.3, 0.22],
+      ] as const) {
+        ctx.fillRect(px - r, py + off * r, r * 2, h * r);
       }
-      return best ? best.id : null;
+      ctx.restore();
     };
-    const toLocal = (e: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    };
-    const onMove = (e: MouseEvent) => {
-      const m = toLocal(e);
-      sim.mouse = m;
-      const id = pick(m.x, m.y);
-      sim.hoverId = id;
-      canvas.style.cursor = id ? "pointer" : "default";
-    };
-    const onLeave = () => {
-      sim.mouse = null;
-      sim.hoverId = null;
-    };
-    const onClick = (e: MouseEvent) => {
-      const m = toLocal(e);
-      propsRef.current.onSelect(pick(m.x, m.y));
-    };
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      propsRef.current.onZoomBy(e.deltaY < 0 ? 1 : -1);
-    };
-    canvas.addEventListener("mousemove", onMove);
-    canvas.addEventListener("mouseleave", onLeave);
-    canvas.addEventListener("click", onClick);
-    canvas.addEventListener("wheel", onWheel, { passive: false });
 
-    /* ---------- 绘制 ---------- */
-    const draw = (dt: number) => {
-      const p = propsRef.current;
-      const { w, h } = sim;
-      if (w === 0 || h === 0) return;
-      const reduced = p.reducedMotion;
-      if (!reduced) sim.t += dt;
-      const t = sim.t;
+    const drawLabel = (text: string, wx: number, wy: number, z: number) => {
+      ctx.font = `500 ${12 / z}px "Noto Sans SC", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.lineWidth = 3.5 / z;
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "rgba(4,7,16,0.78)";
+      ctx.strokeText(text, wx, wy);
+      ctx.fillStyle = "rgba(226,232,240,0.92)";
+      ctx.fillText(text, wx, wy);
+    };
 
-      ctx.clearRect(0, 0, w, h);
+    /* ---------------- main loop ---------------- */
+    const frame = (now: number) => {
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+      const ui = uiRef.current;
+      if (ui.playing) sim.days += dt * DAYS_PER_SEC * ui.speed;
+      const t = now / 1000;
 
-      /* 星场（视差漂移 + 闪烁） */
-      for (const s of sim.stars) {
-        const x = (s.x + t * s.v) % w;
-        const twinkle = reduced ? 1 : 0.62 + 0.38 * Math.sin(t * s.tw + s.ph);
-        ctx.globalAlpha = s.a * twinkle;
-        ctx.fillStyle = s.tint;
+      const fit = (Math.min(W, H) / 2 - 42) / 665;
+
+      // selected body world position (needed for follow-cam + highlight)
+      const sel = ui.selectedId
+        ? BODIES.find((b) => b.id === ui.selectedId) ?? null
+        : null;
+      let selWX = 0;
+      let selWY = 0;
+      if (sel && sel.orbitR > 0) {
+        const ang = sel.startAngle + (TAU * sim.days) / sel.orbitDays;
+        selWX = Math.cos(ang) * sel.orbitR;
+        selWY = Math.sin(ang) * sel.orbitR;
+      }
+
+      // camera targets
+      let tx = 0;
+      let ty = 0;
+      let tz = fit;
+      if (sel && sel.orbitR > 0 && ui.follow) {
+        tx = selWX;
+        ty = selWY;
+        tz = Math.min(Math.max(fit * 3.6, 0.5), 2.4);
+      } else if (sel && sel.isStar && ui.follow) {
+        tz = fit * 1.9;
+      }
+      const k = 1 - Math.exp(-dt * 4.2);
+      cam.x += (tx - cam.x) * k;
+      cam.y += (ty - cam.y) * k;
+      cam.zoom += (tz - cam.zoom) * k;
+      const z = cam.zoom;
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.drawImage(bg, 0, 0, W, H);
+
+      // twinkling stars
+      for (const s of twinkles) {
+        const a = s.a * (0.45 + 0.55 * Math.sin(t * s.speed + s.phase));
+        if (a < 0.03) continue;
+        ctx.globalAlpha = a;
+        ctx.fillStyle = "#cdd8f5";
         ctx.beginPath();
-        ctx.arc(x, s.y, s.r, 0, Math.PI * 2);
+        ctx.arc(s.x, s.y, s.r, 0, TAU);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
 
-      /* 彗星 */
-      if (!reduced && p.playing) {
-        sim.cometTimer -= dt;
-        if (sim.cometTimer <= 0 && sim.comets.length < 2) {
-          const fromLeft = Math.random() > 0.5;
-          sim.comets.push({
-            x: fromLeft ? -40 : w + 40,
-            y: h * (0.08 + Math.random() * 0.3),
-            vx: (fromLeft ? 1 : -1) * (380 + Math.random() * 220),
-            vy: 90 + Math.random() * 130,
-            len: 110 + Math.random() * 70,
-          });
-          sim.cometTimer = 9 + Math.random() * 11;
-        }
+      // shooting stars
+      shootTimer -= dt;
+      if (shootTimer <= 0) {
+        shootTimer = rand(6, 13);
+        const dir = Math.random() < 0.5 ? -1 : 1;
+        shoots.push({
+          x: rand(W * 0.15, W * 0.85),
+          y: rand(0, H * 0.35),
+          vx: dir * rand(190, 330),
+          vy: rand(120, 210),
+          life: 1,
+        });
       }
-      sim.comets = sim.comets.filter(
-        (c) => c.x > -200 && c.x < w + 200 && c.y < h + 200
-      );
-      for (const c of sim.comets) {
-        c.x += c.vx * dt;
-        c.y += c.vy * dt;
-        const mag = Math.hypot(c.vx, c.vy);
-        const tx = (c.vx / mag) * c.len;
-        const ty = (c.vy / mag) * c.len;
-        const grad = ctx.createLinearGradient(c.x, c.y, c.x - tx, c.y - ty);
-        grad.addColorStop(0, "rgba(210,240,255,0.9)");
-        grad.addColorStop(1, "rgba(210,240,255,0)");
-        ctx.strokeStyle = grad;
-        ctx.lineWidth = 1.6;
+      shoots = shoots.filter((s) => s.life > 0);
+      for (const s of shoots) {
+        s.x += s.vx * dt;
+        s.y += s.vy * dt;
+        s.life -= dt * 1.15;
+        const tx2 = s.x - s.vx * 0.18;
+        const ty2 = s.y - s.vy * 0.18;
+        const g = ctx.createLinearGradient(s.x, s.y, tx2, ty2);
+        g.addColorStop(0, `rgba(255,255,255,${Math.max(0, 0.85 * s.life)})`);
+        g.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.strokeStyle = g;
+        ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.moveTo(c.x, c.y);
-        ctx.lineTo(c.x - tx, c.y - ty);
+        ctx.moveTo(s.x, s.y);
+        ctx.lineTo(tx2, ty2);
         ctx.stroke();
-        ctx.fillStyle = "rgba(235,248,255,0.95)";
-        ctx.beginPath();
-        ctx.arc(c.x, c.y, 1.8, 0, Math.PI * 2);
-        ctx.fill();
       }
 
-      /* 几何布局 */
-      const cx = w / 2;
-      const cy = h * 0.53;
-      const R = Math.min(w * 0.445, h * 0.465);
-      const scale = Math.max(0.62, Math.min(1.15, Math.min(w, h) / 880));
-      const zoom = p.zoom;
-      const sunR = SUN_R * scale * Math.pow(zoom, 0.55);
+      /* ---- world space ---- */
+      ctx.save();
+      ctx.translate(W / 2, H / 2);
+      ctx.scale(z, z);
+      ctx.translate(-cam.x, -cam.y);
 
-      /* 轨道 */
-      if (p.showOrbits) {
-        for (let i = 0; i < 8; i++) {
-          const sel = PLANETS[i].id === p.selected;
-          const hov = PLANETS[i].id === sim.hoverId;
-          const rOrbit = ORBIT_F[i] * R * zoom;
+      // orbit paths
+      if (ui.showOrbits) {
+        for (const p of PLANETS) {
+          const active = ui.selectedId === p.id || hoverLocal === p.id;
           ctx.beginPath();
-          ctx.ellipse(cx, cy, rOrbit, rOrbit * TILT, 0, 0, Math.PI * 2);
-          ctx.strokeStyle =
-            sel || hov
-              ? hexToRgba(PLANETS[i].color, sel ? 0.55 : 0.38)
-              : "rgba(190,205,235,0.13)";
-          ctx.lineWidth = sel || hov ? 1.4 : 1;
+          ctx.arc(0, 0, p.orbitR, 0, TAU);
+          if (active) {
+            ctx.lineWidth = 4.5 / z;
+            ctx.strokeStyle = hexA(p.color, 0.14);
+            ctx.stroke();
+            ctx.lineWidth = 1.5 / z;
+            ctx.strokeStyle = hexA(p.color, 0.75);
+          } else {
+            ctx.lineWidth = 1 / z;
+            ctx.strokeStyle = "rgba(148,163,184,0.15)";
+          }
           ctx.stroke();
         }
       }
 
-      /* 计算行星位置 */
-      type PItem = { i: number; x: number; y: number; r: number };
-      const items: PItem[] = PLANETS.map((body, i) => {
-        const rOrbit = ORBIT_F[i] * R * zoom;
-        const a = sim.angles[i];
-        const pr = P_RAD[i] * scale * Math.pow(zoom, 0.5);
-        return {
-          i,
-          x: cx + Math.cos(a) * rOrbit,
-          y: cy + Math.sin(a) * rOrbit * TILT,
-          r: pr,
-        };
+      screenPos.length = 0;
+
+      // sun
+      const pulse = 1 + Math.sin(t * 1.8) * 0.025;
+      const sr = SUN.size * pulse;
+      let g = ctx.createRadialGradient(0, 0, sr * 0.4, 0, 0, sr * 3.4);
+      g.addColorStop(0, "rgba(255,190,90,0.30)");
+      g.addColorStop(0.45, "rgba(255,140,50,0.10)");
+      g.addColorStop(1, "rgba(255,120,40,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, sr * 3.4, 0, TAU);
+      ctx.fill();
+
+      g = ctx.createRadialGradient(-sr * 0.22, -sr * 0.22, sr * 0.08, 0, 0, sr);
+      g.addColorStop(0, "#fff8dc");
+      g.addColorStop(0.35, "#ffe29a");
+      g.addColorStop(0.72, "#ffb84d");
+      g.addColorStop(1, "#ff8a3c");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, sr, 0, TAU);
+      ctx.fill();
+
+      screenPos.push({
+        id: SUN.id,
+        x: w2sX(0),
+        y: w2sY(0),
+        r: Math.max(sr * z, 16),
       });
 
-      sim.hits = [
-        { id: "sun", x: cx, y: cy, r: sunR + 6 },
-        ...items.map((it) => ({
-          id: PLANETS[it.i].id,
-          x: it.x,
-          y: it.y,
-          r: Math.max(it.r, 10),
-        })),
-      ];
-
-      /* 画家算法：先远处（y 小），太阳按自身 y 插入 */
-      const ordered: PItem[] = [...items].sort((a, b) => a.y - b.y);
-      const queue: (PItem | "sun")[] = [];
-      let sunPlaced = false;
-      for (const it of ordered) {
-        if (!sunPlaced && it.y >= cy) {
-          queue.push("sun");
-          sunPlaced = true;
-        }
-        queue.push(it);
-      }
-      if (!sunPlaced) queue.push("sun");
-
-      const drawTrail = (it: PItem) => {
-        const body = PLANETS[it.i];
-        const rOrbit = ORBIT_F[it.i] * R * zoom;
-        const span = TRAIL_SPANS[it.i];
-        const N = 24;
-        const a = sim.angles[it.i];
-        ctx.lineCap = "round";
-        ctx.lineWidth = Math.max(1.1, it.r * 0.26);
-        let px = it.x;
-        let py = it.y;
-        for (let k = 1; k <= N; k++) {
-          const ak = a - (span * k) / N;
-          const nx = cx + Math.cos(ak) * rOrbit;
-          const ny = cy + Math.sin(ak) * rOrbit * TILT;
-          ctx.strokeStyle = hexToRgba(
-            body.color,
-            0.42 * (1 - k / N) * (body.id === p.selected ? 1.5 : 1)
-          );
-          ctx.beginPath();
-          ctx.moveTo(px, py);
-          ctx.lineTo(nx, ny);
-          ctx.stroke();
-          px = nx;
-          py = ny;
-        }
-      };
-
-      const drawSaturnRing = (it: PItem, front: boolean) => {
-        const rr = it.r;
-        ctx.strokeStyle = hexToRgba("#e8d9a8", front ? 0.85 : 0.45);
-        ctx.lineWidth = rr * 0.42;
+      if (ui.selectedId === SUN.id) {
+        ctx.setLineDash([6 / z, 5 / z]);
+        ctx.lineDashOffset = (-t * 26) / z;
+        ctx.lineWidth = 1.5 / z;
+        ctx.strokeStyle = hexA(SUN.color, 0.9);
         ctx.beginPath();
-        if (front) ctx.ellipse(it.x, it.y, rr * 2.05, rr * 0.62, -0.32, 0.05, Math.PI - 0.05);
-        else ctx.ellipse(it.x, it.y, rr * 2.05, rr * 0.62, -0.32, Math.PI, Math.PI * 2);
+        ctx.arc(0, 0, sr + 10 / z, 0, TAU);
         ctx.stroke();
-      };
+        ctx.setLineDash([]);
+      }
+      if (ui.showLabels || ui.selectedId === SUN.id || hoverLocal === SUN.id) {
+        drawLabel(SUN.name, 0, sr + 22 / z, z);
+      }
 
-      const drawPlanet = (it: PItem) => {
-        const body = PLANETS[it.i];
-        const { x, y, r } = it;
+      // planets
+      for (const p of PLANETS) {
+        const ang = p.startAngle + (TAU * sim.days) / p.orbitDays;
+        const px = Math.cos(ang) * p.orbitR;
+        const py = Math.sin(ang) * p.orbitR;
+        const r = p.size;
 
-        drawTrail(it);
-        if (body.id === "saturn") drawSaturnRing(it, false);
+        screenPos.push({
+          id: p.id,
+          x: w2sX(px),
+          y: w2sY(py),
+          r: Math.max(r * z, 13),
+        });
 
-        const lightA = Math.atan2(cy - y, cx - x);
-        const g = ctx.createRadialGradient(
-          x + Math.cos(lightA) * r * 0.45,
-          y + Math.sin(lightA) * r * 0.45,
-          r * 0.12,
-          x,
-          y,
-          r
-        );
-        g.addColorStop(0, hexToRgba("#ffffff", 0.95));
-        g.addColorStop(0.25, body.color);
-        g.addColorStop(1, hexToRgba(body.glow, 1));
-        ctx.shadowColor = body.color;
-        ctx.shadowBlur = r * 2.4;
-        ctx.fillStyle = g;
+        // ambient glow
+        const gg = ctx.createRadialGradient(px, py, r * 0.4, px, py, r * 2.6);
+        gg.addColorStop(0, hexA(p.color, 0.26));
+        gg.addColorStop(1, hexA(p.color, 0));
+        ctx.fillStyle = gg;
         ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.arc(px, py, r * 2.6, 0, TAU);
         ctx.fill();
-        ctx.shadowBlur = 0;
 
-        if (body.id === "saturn") drawSaturnRing(it, true);
+        if (p.hasRings) drawRingHalf(px, py, r, true);
 
-        /* 地球的月球 */
-        if (body.id === "earth") {
-          const ma = t * 2.6 + 1.2;
-          const mx = x + Math.cos(ma) * r * 2.7;
-          const my = y + Math.sin(ma) * r * 1.35;
-          ctx.fillStyle = "rgba(207,216,227,0.9)";
+        // sphere lit from the sun's direction
+        const d = Math.hypot(px, py) || 1;
+        const lx = px - (px / d) * r * 0.45;
+        const ly = py - (py / d) * r * 0.45;
+        const sg = ctx.createRadialGradient(lx, ly, r * 0.12, px, py, r * 1.05);
+        sg.addColorStop(0, p.c1);
+        sg.addColorStop(0.55, p.c2);
+        sg.addColorStop(1, p.c3);
+        ctx.fillStyle = sg;
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, TAU);
+        ctx.fill();
+
+        if (p.bands) drawBands(px, py, r, "rgba(90,55,25,0.16)");
+
+        if (p.hasRings) drawRingHalf(px, py, r, false);
+
+        // the Moon
+        if (p.id === "earth") {
+          const mr = r + 8;
           ctx.beginPath();
-          ctx.arc(mx, my, Math.max(1.3, r * 0.24), 0, Math.PI * 2);
+          ctx.arc(px, py, mr, 0, TAU);
+          ctx.lineWidth = 0.7 / z;
+          ctx.strokeStyle = "rgba(203,213,225,0.22)";
+          ctx.stroke();
+          const ma = TAU * (sim.days / 27.3);
+          ctx.fillStyle = "#c9ccd4";
+          ctx.beginPath();
+          ctx.arc(px + Math.cos(ma) * mr, py + Math.sin(ma) * mr, 2.4, 0, TAU);
           ctx.fill();
         }
 
-        /* 悬停 / 选中指示环 */
-        const isSel = p.selected === body.id;
-        const isHov = sim.hoverId === body.id;
-        if (isSel || isHov) {
+        // hover + selection rings
+        if (hoverLocal === p.id && ui.selectedId !== p.id) {
+          ctx.lineWidth = 1 / z;
+          ctx.strokeStyle = "rgba(255,255,255,0.55)";
           ctx.beginPath();
-          ctx.arc(x, y, r + 6, 0, Math.PI * 2);
-          ctx.strokeStyle = hexToRgba(body.color, isSel ? 0.95 : 0.7);
-          ctx.lineWidth = 1.4;
-          if (isSel) {
-            ctx.setLineDash([4, 6]);
-            ctx.lineDashOffset = -t * 26;
-          }
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          ctx.arc(x, y, r + 11, 0, Math.PI * 2);
-          ctx.strokeStyle = hexToRgba(body.color, 0.22);
+          ctx.arc(px, py, r + 5 / z, 0, TAU);
           ctx.stroke();
         }
-
-        /* 名称标签 */
-        if (p.showLabels || isSel || isHov) {
-          ctx.font = `500 ${Math.round(11 * scale)}px "Noto Sans SC", sans-serif`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          ctx.shadowColor = "rgba(0,0,0,0.8)";
-          ctx.shadowBlur = 6;
-          ctx.fillStyle = isSel || isHov ? "#ffffff" : "rgba(226,232,255,0.6)";
-          ctx.fillText(body.nameZh, x, y + r + 9);
-          ctx.shadowBlur = 0;
-        }
-      };
-
-      const drawSun = () => {
-        const pulse = reduced ? 0 : 1;
-        const breathe = 1 + 0.045 * pulse * Math.sin(t * 1.4);
-        const r0 = sunR * breathe;
-
-        const g3 = ctx.createRadialGradient(cx, cy, r0 * 0.4, cx, cy, r0 * 6);
-        g3.addColorStop(0, `rgba(255,158,44,${0.2 + 0.06 * pulse * Math.sin(t * 1.1)})`);
-        g3.addColorStop(1, "rgba(255,158,44,0)");
-        ctx.fillStyle = g3;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r0 * 6, 0, Math.PI * 2);
-        ctx.fill();
-
-        const g2 = ctx.createRadialGradient(cx, cy, r0 * 0.5, cx, cy, r0 * 2.6);
-        g2.addColorStop(0, "rgba(255,201,77,0.5)");
-        g2.addColorStop(1, "rgba(255,201,77,0)");
-        ctx.fillStyle = g2;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r0 * 2.6, 0, Math.PI * 2);
-        ctx.fill();
-
-        const core = ctx.createRadialGradient(
-          cx - r0 * 0.25,
-          cy - r0 * 0.25,
-          r0 * 0.1,
-          cx,
-          cy,
-          r0
-        );
-        core.addColorStop(0, "#fff8e1");
-        core.addColorStop(0.45, "#ffd75e");
-        core.addColorStop(1, "#ff9e2c");
-        ctx.shadowColor = "#ffc94d";
-        ctx.shadowBlur = r0 * 1.6;
-        ctx.fillStyle = core;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
-        if (p.selected === "sun" || sim.hoverId === "sun") {
+        if (ui.selectedId === p.id) {
+          ctx.setLineDash([6 / z, 5 / z]);
+          ctx.lineDashOffset = (-t * 26) / z;
+          ctx.lineWidth = 1.5 / z;
+          ctx.strokeStyle = hexA(p.color, 0.95);
           ctx.beginPath();
-          ctx.arc(cx, cy, r0 + 8, 0, Math.PI * 2);
-          ctx.strokeStyle = "rgba(255,201,77,0.85)";
-          ctx.lineWidth = 1.4;
-          if (p.selected === "sun") {
-            ctx.setLineDash([4, 6]);
-            ctx.lineDashOffset = -t * 26;
-          }
+          ctx.arc(px, py, r + 8 / z, 0, TAU);
           ctx.stroke();
           ctx.setLineDash([]);
         }
-        if (p.showLabels || p.selected === "sun" || sim.hoverId === "sun") {
-          ctx.font = `500 ${Math.round(11 * scale)}px "Noto Sans SC", sans-serif`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          ctx.shadowColor = "rgba(0,0,0,0.8)";
-          ctx.shadowBlur = 6;
-          ctx.fillStyle = "rgba(255,231,178,0.85)";
-          ctx.fillText("太阳", cx, cy + r0 + 10);
-          ctx.shadowBlur = 0;
-        }
-      };
 
-      for (const q of queue) {
-        if (q === "sun") drawSun();
-        else drawPlanet(q);
-      }
-
-      /* 悬停提示气泡 */
-      if (sim.hoverId && sim.mouse) {
-        const hit = sim.hits.find((h2) => h2.id === sim.hoverId);
-        const body =
-          sim.hoverId === "sun"
-            ? null
-            : PLANETS.find((b) => b.id === sim.hoverId);
-        if (hit) {
-          const name = sim.hoverId === "sun" ? "太阳" : body?.nameZh ?? "";
-          const sub = "点击查看详情";
-          ctx.font = `500 ${Math.round(12 * scale)}px "Noto Sans SC", sans-serif`;
-          const wName = ctx.measureText(name).width;
-          ctx.font = `400 ${Math.round(10 * scale)}px "Noto Sans SC", sans-serif`;
-          const wSub = ctx.measureText(sub).width;
-          const bw = Math.max(wName, wSub) + 24;
-          const bh = 42;
-          let bx = hit.x - bw / 2;
-          let by = hit.y - hit.r - bh - 14;
-          bx = Math.max(8, Math.min(w - bw - 8, bx));
-          if (by < 8) by = hit.y + hit.r + 14;
-          roundRect(ctx, bx, by, bw, bh, 9);
-          ctx.fillStyle = "rgba(8,12,26,0.88)";
-          ctx.fill();
-          ctx.strokeStyle = "rgba(245,198,106,0.35)";
-          ctx.lineWidth = 1;
-          ctx.stroke();
-          ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          ctx.font = `500 ${Math.round(12 * scale)}px "Noto Sans SC", sans-serif`;
-          ctx.fillStyle = "#ffffff";
-          ctx.fillText(name, bx + bw / 2, by + 7);
-          ctx.font = `400 ${Math.round(10 * scale)}px "Noto Sans SC", sans-serif`;
-          ctx.fillStyle = "rgba(226,232,255,0.55)";
-          ctx.fillText(sub, bx + bw / 2, by + 24);
+        if (ui.showLabels || ui.selectedId === p.id || hoverLocal === p.id) {
+          const off = p.hasRings ? r * 1.55 : r;
+          drawLabel(p.name, px, py - off - 10 / z, z);
         }
       }
-    };
 
-    /* ---------- 主循环 ---------- */
-    let raf = 0;
-    let last = performance.now();
-    let uiAccum = 0;
-    const frame = (now: number) => {
-      const dt = Math.min(0.05, (now - last) / 1000);
-      last = now;
-      const p = propsRef.current;
-      if (p.playing) {
-        const dtDays = dt * BASE_DAYS_PER_SEC * p.speed;
-        sim.simDays += dtDays;
-        for (let i = 0; i < 8; i++) {
-          sim.angles[i] += (dtDays * Math.PI * 2) / PERIODS[i];
-        }
+      ctx.restore();
+
+      // simulated-time readout
+      const el = simTimeRef.current;
+      if (el) {
+        const days = sim.days;
+        const years = Math.floor(days / 365.25);
+        const rem = Math.floor(days - years * 365.25);
+        el.textContent =
+          years > 0 ? `${years} 年 ${rem} 天` : `${Math.floor(days)} 天`;
       }
-      draw(dt);
-      uiAccum += dt;
-      if (uiAccum > 0.15) {
-        uiAccum = 0;
-        p.onSimDays(sim.simDays);
-      }
+
       raf = requestAnimationFrame(frame);
     };
+
+    /* ---------------- pointer interaction ---------------- */
+    const hitTest = (mx: number, my: number): string | null => {
+      for (let i = screenPos.length - 1; i >= 0; i--) {
+        const s = screenPos[i];
+        if (Math.hypot(mx - s.x, my - s.y) <= s.r + 4) return s.id;
+      }
+      return null;
+    };
+
+    const onMove = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const id = hitTest(mx, my);
+      if (id !== hoverLocal) {
+        hoverLocal = id;
+        setHoverId(id);
+      }
+      canvas.style.cursor = id ? "pointer" : "default";
+      const tip = tooltipRef.current;
+      if (tip) {
+        tip.style.left = `${e.clientX + 16}px`;
+        tip.style.top = `${e.clientY + 14}px`;
+      }
+    };
+
+    const onLeave = () => {
+      hoverLocal = null;
+      setHoverId(null);
+    };
+
+    const onClick = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const id = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+      onSelectRef.current(id);
+    };
+
+    resize();
+    window.addEventListener("resize", resize);
+    canvas.addEventListener("mousemove", onMove);
+    canvas.addEventListener("mouseleave", onLeave);
+    canvas.addEventListener("click", onClick);
     raf = requestAnimationFrame(frame);
 
     return () => {
@@ -537,16 +542,47 @@ export default function SolarSystem(props: Props) {
       canvas.removeEventListener("mousemove", onMove);
       canvas.removeEventListener("mouseleave", onLeave);
       canvas.removeEventListener("click", onClick);
-      canvas.removeEventListener("wheel", onWheel);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const hoverBody: BodyData | null = hoverId
+    ? BODIES.find((b) => b.id === hoverId) ?? null
+    : null;
+
   return (
-    <canvas
-      ref={canvasRef}
-      className="absolute inset-0 h-full w-full"
-      aria-label="太阳系轨道动画画布"
-      role="img"
-    />
+    <>
+      <canvas
+        ref={canvasRef}
+        className="fixed inset-0 z-0"
+        aria-label="太阳系轨道模拟画布"
+      />
+      {/* hover tooltip */}
+      <div
+        ref={tooltipRef}
+        className={`pointer-events-none fixed z-40 -translate-y-0 rounded-md border border-white/12 bg-[#0a1024]/92 px-3 py-1.5 shadow-lg backdrop-blur-sm transition-opacity duration-150 ${
+          hoverBody ? "opacity-100" : "opacity-0"
+        }`}
+        style={{ left: -200, top: -200 }}
+      >
+        {hoverBody && (
+          <div className="flex items-baseline gap-2">
+            <span
+              className="inline-block h-2 w-2 shrink-0 self-center rounded-full"
+              style={{
+                background: hoverBody.color,
+                boxShadow: `0 0 8px ${hoverBody.color}`,
+              }}
+            />
+            <span className="font-display text-sm leading-none text-slate-100">
+              {hoverBody.name}
+            </span>
+            <span className="font-data text-[10px] uppercase tracking-[0.18em] text-slate-400">
+              {hoverBody.english}
+            </span>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
